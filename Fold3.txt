@@ -1,0 +1,93 @@
+/*
+ * CSC308 - Lab 3 - Fold 3
+ * Sequential File Processing: NO threads
+ * Compile: gcc -o fold3 fold3.c
+ * Run:     time ./fold3 LargeFile.txt
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <time.h>
+
+#define MAX_LINE_LEN 4096
+
+int is_vowel(char c) {
+    c = tolower(c);
+    return c=='a'||c=='e'||c=='i'||c=='o'||c=='u';
+}
+
+int main(int argc, char *argv[]) {
+    if (argc < 2) {
+        fprintf(stderr, "Usage: %s <filename>\n", argv[0]);
+        return 1;
+    }
+
+    struct timespec t_start, t_end;
+    clock_gettime(CLOCK_MONOTONIC, &t_start);
+
+    printf("=== Fold 3: Sequential (No Threads) ===\n\n");
+
+    FILE *fp = fopen(argv[1], "r");
+    if (!fp) { perror("fopen"); return 1; }
+
+    long  total_lines    = 0;
+    long  total_words    = 0;
+    long  total_vowels   = 0;
+    long  total_uppercase = 0;
+    char  longest_word[256] = "";
+
+    char  buf[MAX_LINE_LEN];
+
+    while (fgets(buf, sizeof(buf), fp)) {
+        total_lines++;
+        int  len     = strlen(buf);
+        int  in_word = 0;
+        char word[256] = "";
+        int  wi = 0;
+
+        for (int j = 0; j < len; j++) {
+            char c = buf[j];
+            if (isalpha((unsigned char)c)) {
+                if (!in_word) { in_word = 1; wi = 0; }
+                if (wi < 255) word[wi++] = c;
+                if (is_vowel(c))             total_vowels++;
+                if (isupper((unsigned char)c)) total_uppercase++;
+            } else {
+                if (in_word) {
+                    word[wi] = '\0';
+                    if (wi > (int)strlen(longest_word))
+                        strcpy(longest_word, word);
+                    total_words++;
+                    in_word = 0;
+                }
+            }
+        }
+        /* Handle word at end of line (no trailing space) */
+        if (in_word) {
+            word[wi] = '\0';
+            if (wi > (int)strlen(longest_word))
+                strcpy(longest_word, word);
+            total_words++;
+        }
+    }
+    fclose(fp);
+
+    clock_gettime(CLOCK_MONOTONIC, &t_end);
+    double elapsed = (t_end.tv_sec - t_start.tv_sec)
+                   + (t_end.tv_nsec - t_start.tv_nsec) / 1e9;
+
+    printf("============================================\n");
+    printf("           FINAL RESULTS (Fold 3)          \n");
+    printf("============================================\n");
+    printf("  Total Lines          : %ld\n", total_lines);
+    printf("  Total Words          : %ld\n", total_words);
+    printf("  Total Vowels         : %ld\n", total_vowels);
+    printf("  Longest Word         : \"%s\"\n", longest_word);
+    printf("  Total Uppercase Ltrs : %ld\n", total_uppercase);
+    printf("  Execution Time       : %.4f seconds\n", elapsed);
+    printf("============================================\n");
+
+    return 0;
+}
