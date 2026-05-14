@@ -1,0 +1,136 @@
+/*
+ * CSC308 - Lab 3 - Fold 2
+ * Multithreaded File Processing: Implicit Threading ONLY (OpenMP)
+ * Compile: gcc -o fold2 fold2.c -fopenmp
+ * Run:     time ./fold2 LargeFile.txt
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <omp.h>
+#include <time.h>
+
+#define MAX_LINE_LEN 4096
+#define MAX_LINES    5000000
+
+int is_vowel(char c) {
+    c = tolower(c);
+    return c=='a'||c=='e'||c=='i'||c=='o'||c=='u';
+}
+
+int main(int argc, char *argv[]) {
+    if (argc < 2) {
+        fprintf(stderr, "Usage: %s <filename>\n", argv[0]);
+        return 1;
+    }
+
+    struct timespec t_start, t_end;
+    clock_gettime(CLOCK_MONOTONIC, &t_start);
+
+    printf("=== Fold 2: Implicit Threading Only (OpenMP) ===\n\n");
+
+    /* ── Read entire file into memory ── */
+    FILE *fp = fopen(argv[1], "r");
+    if (!fp) { perror("fopen"); return 1; }
+
+    char **lines = malloc(MAX_LINES * sizeof(char *));
+    int    total_lines = 0;
+    char   buf[MAX_LINE_LEN];
+
+    while (fgets(buf, sizeof(buf), fp) && total_lines < MAX_LINES) {
+        int n = strlen(buf);
+        if (n > 0 && buf[n-1] == '\n') buf[n-1] = '\0';
+        lines[total_lines++] = strdup(buf);
+    }
+    fclose(fp);
+    printf("File loaded: %d lines\n\n", total_lines);
+
+    /* ── Shared accumulators ── */
+    long total_words     = 0;
+    long total_vowels    = 0;
+    long total_uppercase = 0;
+    char longest_word[256] = "";
+
+    /* Per-thread local longest words (to avoid critical-section bottleneck) */
+    int max_threads = omp_get_max_threads();
+    char (*local_longest)[256] = malloc(max_threads * 256);
+    for (int i = 0; i < max_threads; i++)
+        local_longest[i][0] = '\0';
+
+    /* ── OpenMP parallel region ── */
+    #pragma omp parallel
+    {
+        int tid = omp_get_thread_num();
+
+        #pragma omp single
+        printf("OpenMP using %d thread(s)\n\n", omp_get_num_threads());
+
+        long  local_words = 0, local_vowels = 0, local_upper = 0;
+
+        #pragma omp for schedule(dynamic, 1000)
+        for (int i = 0; i < total_lines; i++) {
+            char *line  = lines[i];
+            int   len   = strlen(line);
+            int   in_word = 0;
+            char  word[256] = "";
+            int   wi    = 0;
+
+            for (int j = 0; j <= len; j++) {
+                char c = line[j];
+                if (isalpha((unsigned char)c)) {
+                    /* word building */
+                    if (!in_word) { in_word = 1; wi = 0; }
+                    if (wi < 255) word[wi++] = c;
+                    /* vowel check */
+                    if (is_vowel(c)) local_vowels++;
+                    /* uppercase check */
+                    if (isupper((unsigned char)c)) local_upper++;
+                } else {
+                    if (in_word) {
+                        word[wi] = '\0';
+                        if (wi > (int)strlen(local_longest[tid]))
+                            strcpy(local_longest[tid], word);
+                        in_word = 0;
+                        local_words++;
+                    }
+                    /* spaces/punct: if non-alpha but in context of space start word boundary */
+                    /* Also handle apostrophe as part of word? For simplicity, split on non-alpha */
+                }
+            }
+        }
+
+        /* ── Reduce into shared totals ── */
+        #pragma omp critical
+        {
+            total_words     += local_words;
+            total_vowels    += local_vowels;
+            total_uppercase += local_upper;
+            if (strlen(local_longest[tid]) > strlen(longest_word))
+                strcpy(longest_word, local_longest[tid]);
+        }
+    }
+
+    /* total_lines is the line count */
+    clock_gettime(CLOCK_MONOTONIC, &t_end);
+    double elapsed = (t_end.tv_sec - t_start.tv_sec)
+                   + (t_end.tv_nsec - t_start.tv_nsec) / 1e9;
+
+    printf("============================================\n");
+    printf("           FINAL RESULTS (Fold 2)          \n");
+    printf("============================================\n");
+    printf("  Total Lines          : %d\n",  total_lines);
+    printf("  Total Words          : %ld\n", total_words);
+    printf("  Total Vowels         : %ld\n", total_vowels);
+    printf("  Longest Word         : \"%s\"\n", longest_word);
+    printf("  Total Uppercase Ltrs : %ld\n", total_uppercase);
+    printf("  Execution Time       : %.4f seconds\n", elapsed);
+    printf("============================================\n");
+
+    for (int i = 0; i < total_lines; i++) free(lines[i]);
+    free(lines);
+    free(local_longest);
+
+    return 0;
+}
