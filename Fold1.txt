@@ -1,0 +1,241 @@
+/*
+ * CSC308 - Lab 3 - Fold 1
+ * Multithreaded File Processing: Implicit (OpenMP) + Explicit (pthreads)
+ * Compile: gcc -o fold1 fold1.c -fopenmp -lpthread
+ * Run:     time ./fold1 LargeFile.txt
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <pthread.h>
+#include <omp.h>
+#include <time.h>
+
+#define MAX_LINE_LEN 4096
+#define MAX_LINES    5000000
+#define NUM_THREADS  4
+
+/* ─── Global file storage ─── */
+char **lines    = NULL;
+int    total_lines_g = 0;
+
+/* ─── Results from implicit threading ─── */
+long implicit_lines  = 0;
+long implicit_words  = 0;
+long implicit_vowels = 0;
+
+/* ─── Explicit thread argument / result ─── */
+typedef struct {
+    int   thread_id;
+    int   start_line;
+    int   end_line;
+    char  longest_word[256];
+    long  uppercase_count;
+} ThreadArg;
+
+/* ────────────────────────────────────────────
+   HELPERS
+   ──────────────────────────────────────────── */
+int is_vowel(char c) {
+    c = tolower(c);
+    return c=='a'||c=='e'||c=='i'||c=='o'||c=='u';
+}
+
+/* Count words in a single line */
+int count_words(const char *line) {
+    int count = 0, in_word = 0;
+    for (int i = 0; line[i]; i++) {
+        if (!isspace((unsigned char)line[i])) {
+            if (!in_word) { count++; in_word = 1; }
+        } else {
+            in_word = 0;
+        }
+    }
+    return count;
+}
+
+/* Count vowels in a single line */
+int count_vowels(const char *line) {
+    int count = 0;
+    for (int i = 0; line[i]; i++)
+        if (is_vowel(line[i])) count++;
+    return count;
+}
+
+/* ────────────────────────────────────────────
+   METHOD 1: IMPLICIT THREADING (OpenMP)
+   ──────────────────────────────────────────── */
+void method_implicit(long *out_lines, long *out_words, long *out_vowels) {
+    long lines_cnt = 0, words_cnt = 0, vowels_cnt = 0;
+    int  threads_used = 0;
+
+    #pragma omp parallel reduction(+:lines_cnt, words_cnt, vowels_cnt)
+    {
+        /* Only one thread sets this (approximate display) */
+        #pragma omp single
+        {
+            threads_used = omp_get_num_threads();
+            printf("[Implicit] OpenMP is using %d thread(s)\n", threads_used);
+        }
+
+        #pragma omp for schedule(dynamic, 1000)
+        for (int i = 0; i < total_lines_g; i++) {
+            lines_cnt++;
+            words_cnt  += count_words(lines[i]);
+            vowels_cnt += count_vowels(lines[i]);
+        }
+    }
+
+    *out_lines  = lines_cnt;
+    *out_words  = words_cnt;
+    *out_vowels = vowels_cnt;
+}
+
+/* ────────────────────────────────────────────
+   METHOD 2: EXPLICIT THREADING (pthreads)
+   Each thread processes its assigned lines:
+     - finds longest word
+     - counts uppercase letters
+   ──────────────────────────────────────────── */
+void *thread_worker(void *arg) {
+    ThreadArg *t = (ThreadArg *)arg;
+
+    printf("[Explicit] Thread ID %lu | processing lines %d–%d\n",
+           pthread_self(), t->start_line, t->end_line - 1);
+
+    t->longest_word[0]  = '\0';
+    t->uppercase_count  = 0;
+
+    for (int i = t->start_line; i < t->end_line && i < total_lines_g; i++) {
+        char *line = lines[i];
+        int   len  = strlen(line);
+        char  word[256] = "";
+        int   wi   = 0;
+
+        for (int j = 0; j <= len; j++) {
+            char c = line[j];
+            if (isalpha((unsigned char)c) || c == '\'') {
+                if (wi < 255) word[wi++] = c;
+                if (isupper((unsigned char)c)) t->uppercase_count++;
+            } else {
+                if (wi > 0) {
+                    word[wi] = '\0';
+                    if (wi > (int)strlen(t->longest_word))
+                        strcpy(t->longest_word, word);
+                    wi = 0;
+                }
+                /* also count uppercase in non-alpha positions? no—letters only */
+            }
+        }
+    }
+
+    printf("[Explicit] Thread ID %lu | done. Longest word so far: \"%s\" | Uppercase: %ld\n",
+           pthread_self(), t->longest_word, t->uppercase_count);
+
+    pthread_exit(NULL);
+}
+
+void method_explicit(char *out_longest, long *out_uppercase) {
+    pthread_t   tids[NUM_THREADS];
+    ThreadArg   args[NUM_THREADS];
+    int         workload = total_lines_g / NUM_THREADS;
+
+    for (int i = 0; i < NUM_THREADS; i++) {
+        args[i].thread_id    = i;
+        args[i].start_line   = i * workload;
+        args[i].end_line     = (i == NUM_THREADS - 1) ? total_lines_g
+                                                       : (i + 1) * workload;
+        args[i].longest_word[0] = '\0';
+        args[i].uppercase_count = 0;
+        pthread_create(&tids[i], NULL, thread_worker, &args[i]);
+    }
+
+    /* Wait for all threads */
+    for (int i = 0; i < NUM_THREADS; i++)
+        pthread_join(tids[i], NULL);
+
+    /* Combine results */
+    out_longest[0]   = '\0';
+    *out_uppercase   = 0;
+    for (int i = 0; i < NUM_THREADS; i++) {
+        *out_uppercase += args[i].uppercase_count;
+        if (strlen(args[i].longest_word) > strlen(out_longest))
+            strcpy(out_longest, args[i].longest_word);
+    }
+}
+
+/* ────────────────────────────────────────────
+   MAIN / PARENT THREAD
+   ──────────────────────────────────────────── */
+int main(int argc, char *argv[]) {
+    if (argc < 2) {
+        fprintf(stderr, "Usage: %s <filename>\n", argv[0]);
+        return 1;
+    }
+
+    struct timespec t_start, t_end;
+    clock_gettime(CLOCK_MONOTONIC, &t_start);
+
+    /* ── Parent thread info ── */
+    printf("=== Fold 1: Implicit + Explicit Threading ===\n");
+    printf("[Parent] Thread ID: %lu\n\n", pthread_self());
+
+    /* ── Read entire file into memory ── */
+    FILE *fp = fopen(argv[1], "r");
+    if (!fp) { perror("fopen"); return 1; }
+
+    lines = malloc(MAX_LINES * sizeof(char *));
+    if (!lines) { fprintf(stderr, "malloc failed\n"); return 1; }
+
+    char buf[MAX_LINE_LEN];
+    total_lines_g = 0;
+    while (fgets(buf, sizeof(buf), fp) && total_lines_g < MAX_LINES) {
+        /* Remove trailing newline */
+        int n = strlen(buf);
+        if (n > 0 && buf[n-1] == '\n') buf[n-1] = '\0';
+        lines[total_lines_g] = strdup(buf);
+        total_lines_g++;
+    }
+    fclose(fp);
+    printf("[Parent] File loaded: %d lines\n\n", total_lines_g);
+
+    /* ── METHOD 1: Implicit Threading ── */
+    printf("--- Method 1: Implicit Threading (OpenMP) ---\n");
+    long imp_lines, imp_words, imp_vowels;
+    method_implicit(&imp_lines, &imp_words, &imp_vowels);
+    printf("[Implicit] Lines : %ld\n", imp_lines);
+    printf("[Implicit] Words : %ld\n", imp_words);
+    printf("[Implicit] Vowels: %ld\n\n", imp_vowels);
+
+    /* ── METHOD 2: Explicit Threading ── */
+    printf("--- Method 2: Explicit Threading (pthreads, %d threads) ---\n", NUM_THREADS);
+    char exp_longest[256];
+    long exp_uppercase;
+    method_explicit(exp_longest, &exp_uppercase);
+    printf("[Explicit] Longest word     : \"%s\"\n", exp_longest);
+    printf("[Explicit] Uppercase letters: %ld\n\n", exp_uppercase);
+
+    /* ── Final Combined Output ── */
+    clock_gettime(CLOCK_MONOTONIC, &t_end);
+    double elapsed = (t_end.tv_sec - t_start.tv_sec)
+                   + (t_end.tv_nsec - t_start.tv_nsec) / 1e9;
+
+    printf("============================================\n");
+    printf("           FINAL RESULTS (Fold 1)          \n");
+    printf("============================================\n");
+    printf("  Total Lines          : %ld\n", imp_lines);
+    printf("  Total Words          : %ld\n", imp_words);
+    printf("  Total Vowels         : %ld\n", imp_vowels);
+    printf("  Longest Word         : \"%s\"\n", exp_longest);
+    printf("  Total Uppercase Ltrs : %ld\n", exp_uppercase);
+    printf("  Execution Time       : %.4f seconds\n", elapsed);
+    printf("============================================\n");
+
+    /* Free memory */
+    for (int i = 0; i < total_lines_g; i++) free(lines[i]);
+    free(lines);
+
+    return 0;
+}
