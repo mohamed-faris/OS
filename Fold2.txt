@@ -1,9 +1,4 @@
-/*
- * CSC308 - Lab 3 - Fold 2
- * Multithreaded File Processing: Implicit Threading ONLY (OpenMP)
- * Compile: gcc -o fold2 fold2.c -fopenmp
- * Run:     time ./fold2 LargeFile.txt
- */
+
 
 #include <stdio.h>
 #include <stdlib.h>
